@@ -1,10 +1,3 @@
-# bastion-server-alpha
-Yes 👍 — it’s a good idea to include a **README.md** alongside your `main.tf` so that you (or teammates) can quickly understand how to deploy and use the AlmaLinux 9 bastion on OpenStack.
-
-Here’s a draft README you can drop into your repo:
-
----
-
 # Bastion AlmaLinux 9 (Terraform on OpenStack)
 
 This Terraform module provisions a **bastion host** (jumpbox) running AlmaLinux 9 (CLI only) in OpenStack.
