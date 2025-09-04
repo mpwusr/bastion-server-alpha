@@ -41,7 +41,7 @@ variable "network_id" {
 
 variable "subnet_id" {
   type        = string
-  description = "Subnet UUID within network_id"
+  description = "Subnet UUID within network_id (kept for reference/future use)"
 }
 
 variable "external_network_id" {
@@ -65,9 +65,18 @@ variable "attach_volume_boot" {
   default = true
 }
 
+# You can either paste the key text here (single line),
+# or leave this empty and set admin_pubkey_path instead.
 variable "admin_pubkey" {
   type        = string
   description = "Single-line SSH public key text"
+  default     = ""
+}
+
+variable "admin_pubkey_path" {
+  type        = string
+  description = "Path to public key to read if admin_pubkey is empty"
+  default     = "~/.ssh/id_rsa.pub"
 }
 
 variable "tags" {
@@ -75,7 +84,11 @@ variable "tags" {
   default = {}
 }
 
-# -------------------- Data lookups --------------------
+# -------------------- Effective values & data --------------------
+locals {
+  admin_pubkey_effective = var.admin_pubkey != "" ? var.admin_pubkey : trimspace(file(pathexpand(var.admin_pubkey_path)))
+}
+
 data "openstack_images_image_v2" "image" {
   name        = var.image_name
   most_recent = true
@@ -98,9 +111,15 @@ resource "openstack_networking_secgroup_rule_v2" "ssh_in" {
   security_group_id = openstack_networking_secgroup_v2.bastion_sg.id
 }
 
-resource "openstack_networking_secgroup_rule_v2" "egress_all" {
+resource "openstack_networking_secgroup_rule_v2" "egress_all_v4" {
   direction         = "egress"
   ethertype         = "IPv4"
+  security_group_id = openstack_networking_secgroup_v2.bastion_sg.id
+}
+
+resource "openstack_networking_secgroup_rule_v2" "egress_all_v6" {
+  direction         = "egress"
+  ethertype         = "IPv6"
   security_group_id = openstack_networking_secgroup_v2.bastion_sg.id
 }
 
@@ -114,7 +133,7 @@ locals {
         groups: wheel
         shell: /bin/bash
         ssh-authorized-keys:
-          - ${var.admin_pubkey}
+          - ${local.admin_pubkey_effective}
     ssh_pwauth: false
     package_update: true
     packages:
@@ -134,7 +153,7 @@ locals {
   CLOUD
 }
 
-# -------------------- Instance + (optional) boot-from-volume --------------------
+# -------------------- Instance (boot-from-volume optional) --------------------
 resource "openstack_compute_instance_v2" "bastion" {
   name            = var.server_name
   flavor_name     = var.flavor_name
@@ -143,11 +162,12 @@ resource "openstack_compute_instance_v2" "bastion" {
   user_data       = local.user_data
   metadata        = var.tags
 
-  # attach NIC to tenant network
+  # NIC on tenant network
   network {
     uuid = var.network_id
   }
 
+  # Boot from volume (conditional)
   dynamic "block_device" {
     for_each = var.attach_volume_boot ? [1] : []
     content {
@@ -160,20 +180,14 @@ resource "openstack_compute_instance_v2" "bastion" {
     }
   }
 
-  # If NOT booting from volume, set the image directly:
-  lifecycle {
-    ignore_changes = [
-      image_id # ignored because we use block_device when attach_volume_boot=true
-    ]
-  }
-
-  # Only used when attach_volume_boot=false – harmless otherwise
-  image_id = data.openstack_images_image_v2.image.id
+  # If not using block_device, instance falls back to image_id directly
+  image_id = var.attach_volume_boot ? null : data.openstack_images_image_v2.image.id
 }
 
 # -------------------- Floating IP --------------------
 resource "openstack_networking_floatingip_v2" "fip" {
-  pool = var.external_network_id
+  # Use UUID of the external network (preferred)
+  floating_network_id = var.external_network_id
 }
 
 resource "openstack_compute_floatingip_associate_v2" "fip_assoc" {
