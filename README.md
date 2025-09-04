@@ -37,7 +37,6 @@ The bastion is designed to manage multiple Kubernetes clusters by installing com
 
 ---
 
-````markdown
 # Bastion AlmaLinux 9 on OpenStack with Terraform
 
 This project provisions a **bastion host** (jumpbox) running AlmaLinux 9 (CLI) in OpenStack using Terraform.  
@@ -194,6 +193,4 @@ terraform destroy
 * Restrict `ssh_ingress_cidr` in `main.tf` to your trusted IP(s), not `0.0.0.0/0`.
 * Rotate your Application Credentials regularly.
 * Never commit `clouds.yaml` or secrets to Git.
-
-```
 
