@@ -8,21 +8,44 @@ terraform {
   }
 }
 
+# Uses ~/.config/openstack/clouds.yaml -> clouds.mycloud
 provider "openstack" {
   cloud = "mycloud"
+  # region = "AUE1"   # <- uncomment if you want to force region explicitly
 }
 
 # -------------------- Variables --------------------
-variable "server_name" { type = string, default = "bastion-almalinux9" }
-variable "image_name"  { type = string, default = "AlmaLinux-9" }
-variable "flavor_name" { type = string, default = "gp1.micro" }
+variable "server_name" {
+  type    = string
+  default = "bastion-almalinux9"
+}
 
-variable "keypair_name" { type = string, description = "Existing OpenStack keypair name" }
+variable "image_name" {
+  type    = string
+  default = "AlmaLinux-9"
+}
 
-variable "network_id"   { type = string, description = "Tenant/internal network UUID" }
-variable "subnet_id"    { type = string, description = "Subnet UUID within network_id (optional for fixed IPs)" }
+variable "flavor_name" {
+  type    = string
+  default = "gp1.micro"
+}
 
-# IMPORTANT: use the **name** of the external network here, not UUID
+variable "keypair_name" {
+  type        = string
+  description = "Existing OpenStack keypair name"
+}
+
+variable "network_id" {
+  type        = string
+  description = "Tenant/internal network UUID"
+}
+
+variable "subnet_id" {
+  type        = string
+  description = "Subnet UUID within network_id (kept for reference/future use)"
+}
+
+# NOTE: use the **NAME** for the external network (pool), not the UUID.
 variable "external_network_name" {
   type        = string
   description = "External/public network NAME for Floating IPs (what 'openstack network list' shows under Name when External=True)"
@@ -34,22 +57,34 @@ variable "ssh_ingress_cidr" {
   default     = "0.0.0.0/0"
 }
 
-variable "volume_size_gb"   { type = number, default = 20 }
-variable "attach_volume_boot"{ type = bool, default = true }
+variable "volume_size_gb" {
+  type    = number
+  default = 20
+}
 
-# Either set the key text or leave blank and we read from admin_pubkey_path
+variable "attach_volume_boot" {
+  type    = bool
+  default = true
+}
+
+# You can either paste the key text here (single line),
+# or leave this empty and set admin_pubkey_path instead.
 variable "admin_pubkey" {
   type        = string
   description = "Single-line SSH public key text"
   default     = ""
 }
+
 variable "admin_pubkey_path" {
   type        = string
-  description = "Path to public key if admin_pubkey is empty"
+  description = "Path to public key to read if admin_pubkey is empty"
   default     = "~/.ssh/id_rsa.pub"
 }
 
-variable "tags" { type = map(string), default = {} }
+variable "tags" {
+  type    = map(string)
+  default = {}
+}
 
 # -------------------- Effective values & data --------------------
 locals {
@@ -78,17 +113,8 @@ resource "openstack_networking_secgroup_rule_v2" "ssh_in" {
   security_group_id = openstack_networking_secgroup_v2.bastion_sg.id
 }
 
-resource "openstack_networking_secgroup_rule_v2" "egress_all_v4" {
-  direction         = "egress"
-  ethertype         = "IPv4"
-  security_group_id = openstack_networking_secgroup_v2.bastion_sg.id
-}
-
-resource "openstack_networking_secgroup_rule_v2" "egress_all_v6" {
-  direction         = "egress"
-  ethertype         = "IPv6"
-  security_group_id = openstack_networking_secgroup_v2.bastion_sg.id
-}
+# (Most clouds already allow all egress by default; removing explicit egress
+# rules avoids Neutron 409 conflicts for duplicate rules.)
 
 # -------------------- Cloud-init (user-data) --------------------
 locals {
@@ -120,31 +146,18 @@ locals {
   CLOUD
 }
 
-# -------------------- Neutron port (attach SG here) --------------------
-resource "openstack_networking_port_v2" "bastion_port" {
-  name               = "${var.server_name}-port"
-  network_id         = var.network_id
-  security_group_ids = [openstack_networking_secgroup_v2.bastion_sg.id]
-  admin_state_up     = true
-
-  # (Optional) Pin to a subnet or fixed IP:
-  # fixed_ip {
-  #   subnet_id = var.subnet_id
-  #   # ip_address = "x.x.x.x"
-  # }
-}
-
-# -------------------- Instance --------------------
+# -------------------- Instance (boot-from-volume optional) --------------------
 resource "openstack_compute_instance_v2" "bastion" {
-  name        = var.server_name
-  flavor_name = var.flavor_name
-  key_pair    = var.keypair_name
-  user_data   = local.user_data
-  metadata    = var.tags
+  name            = var.server_name
+  flavor_name     = var.flavor_name
+  key_pair        = var.keypair_name
+  security_groups = [openstack_networking_secgroup_v2.bastion_sg.name]
+  user_data       = local.user_data
+  metadata        = var.tags
 
-  # attach the prepared port (with security group)
+  # Let Nova create the NIC on your tenant network
   network {
-    port = openstack_networking_port_v2.bastion_port.id
+    uuid = var.network_id
   }
 
   # Boot from volume (conditional)
@@ -160,17 +173,16 @@ resource "openstack_compute_instance_v2" "bastion" {
     }
   }
 
-  # If not booting from volume, fall back to image_id
+  # If not using block_device, instance falls back to image_id directly
   image_id = var.attach_volume_boot ? null : data.openstack_images_image_v2.image.id
 }
 
-# -------------------- Floating IP (Neutron) --------------------
+# -------------------- Floating IP (allocate by NAME and associate to the instance port) --------------------
 resource "openstack_networking_floatingip_v2" "fip" {
-  # Your provider expects 'pool' (NAME of external net), not floating_network_id
-  pool = var.external_network_name
+  pool = var.external_network_name   # NAME of external network, e.g., "public"
 }
 
 resource "openstack_networking_floatingip_associate_v2" "fip_assoc" {
-  floatingip_id = openstack_networking_floatingip_v2.fip.id
-  port_id       = openstack_networking_port_v2.bastion_port.id
+  floating_ip = openstack_networking_floatingip_v2.fip.address
+  port_id     = openstack_compute_instance_v2.bastion.network[0].port
 }
