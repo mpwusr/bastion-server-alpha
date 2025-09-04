@@ -37,66 +37,151 @@ The bastion is designed to manage multiple Kubernetes clusters by installing com
 
 ---
 
-## Usage
+````markdown
+# Bastion AlmaLinux 9 on OpenStack with Terraform
 
-1. **Clone this repo** or copy the `main.tf` and `README.md` files:
+This project provisions a **bastion host** (jumpbox) running AlmaLinux 9 (CLI) in OpenStack using Terraform.  
+The bastion is designed to manage multiple Kubernetes clusters, with cloud-init installing common tools like:
 
-   ```bash
-   git clone <your-repo-url>
-   cd bastion-terraform
-   ```
+- `kubectl`, `helm`, `k9s`, `kubectx`, `kubens`
+- `openstack` CLI
+- `tmux`, `jq`, and other admin utilities
 
-2. **Export your OpenStack credentials** (if not using `clouds.yaml`):
+---
 
-   ```bash
-   export OS_AUTH_URL=https://openstack.example.com:5000/v3
-   export OS_PROJECT_NAME=myproject
-   export OS_USERNAME=myuser
-   export OS_PASSWORD=mypassword
-   export OS_REGION_NAME=RegionOne
-   ```
+## Prerequisites
 
-3. **Initialize Terraform**:
+- VPN connected to your corporate network (to reach OpenStack APIs).
+- Okta SSO access to Horizon (OpenStack Dashboard).
+- Terraform `>= 1.4`
+- OpenStack Terraform provider `>= 1.54`
+- An OpenStack project/tenant with networking and floating IPs available.
+- An SSH keypair uploaded to OpenStack.
 
-   ```bash
-   terraform init
-   ```
+---
 
-4. **Create a `terraform.tfvars` file** (or pass variables via CLI):
+## Step 1. Log in to Horizon via Okta
 
-   ```hcl
-   keypair_name        = "my-keypair"
-   network_id          = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-   subnet_id           = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-   external_network_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-   ssh_ingress_cidr    = "203.0.113.45/32"   # your public IP
-   admin_pubkey        = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ..."
-   ```
+1. Open your Horizon URL (example):  
+   `https://horizon.example.com`
+2. Choose **Okta** as the login method and sign in.
+3. In the top bar, switch to the **Project** where you want the bastion created.
 
-5. **Plan and apply**:
+---
 
-   ```bash
-   terraform plan
-   terraform apply
-   ```
+## Step 2. Create an Application Credential
 
-6. **Connect to the bastion**:
+1. Navigate to **Identity → Application Credentials**.
+2. Click **Create Application Credential**.
+3. Fill the form:
+   - **Name:** `terraform-bastion`
+   - **Description:** `Terraform provisioning from my laptop`
+   - **Secret:** leave blank (auto-generate)
+   - **Expires At:** set if required (e.g., +90 days)
+   - **Roles:** select at least your project’s role (often `member`)
+   - **Unrestricted:** enable if allowed for Terraform provisioning
+4. Click **Create** and download the credential file if Horizon offers it.  
+   If not, copy the displayed **ID** and **Secret**.
 
-   ```bash
-   ssh admin@<floating_ip>
-   ```
+---
 
-   From here you can run:
+## Step 3. Save `clouds.yaml`
 
-   * `kubectl` to manage your clusters (add kubeconfigs in `~/.kube/config`)
-   * `helm`, `k9s`, `kubectx`, `kubens` for easier cluster management
-   * `openstack` CLI for cloud operations
+Create `~/.config/openstack/clouds.yaml` (if it doesn’t exist):
+
+```yaml
+clouds:
+  mycloud:
+    auth:
+      auth_url: https://openstack.example.com:5000/v3
+      application_credential_id: "APP_CRED_ID_FROM_HORIZON"
+      application_credential_secret: "APP_CRED_SECRET_FROM_HORIZON"
+    region_name: "RegionOne"
+    interface: "public"        # or "internal" if required over VPN
+    identity_api_version: 3
+````
+
+⚠️ **Do not commit this file to Git.** It contains secrets.
+
+---
+
+## Step 4. Test the OpenStack CLI
+
+Export the cloud name:
+
+```bash
+export OS_CLOUD=mycloud
+```
+
+Test your credential:
+
+```bash
+openstack token issue
+openstack server list
+```
+
+If you see a token and server list (even if empty), your credential works.
+
+---
+
+## Step 5. Configure Terraform
+
+In `main.tf`:
+
+```hcl
+provider "openstack" {
+  cloud = "mycloud"   # matches the clouds.yaml entry
+}
+```
+
+Run:
+
+```bash
+terraform init
+terraform plan
+terraform apply
+```
+
+Terraform will provision the AlmaLinux 9 bastion with a floating IP and install admin tools.
+
+---
+
+## Step 6. Connect to the Bastion
+
+```bash
+ssh admin@<floating_ip>
+```
+
+Once inside, you’ll have:
+
+* `kubectl`, `helm`, `k9s` for managing clusters
+* `openstack` CLI for cloud operations
+
+Upload your kubeconfigs into `~/.kube/config` to use `kubectl`.
+
+---
+
+## Step 7. Rotate or Revoke Credentials
+
+* **Rotate:** Create a new Application Credential in Horizon, update `clouds.yaml`, then delete the old one.
+* **Revoke:** Delete the Application Credential in Horizon to immediately invalidate it.
+* **Expire:** If you set `Expires At`, you’ll need to generate a new one before it lapses.
+
+---
+
+## Troubleshooting
+
+* **401 Unauthorized:** Wrong ID/Secret or expired credential → recreate the Application Credential.
+* **Cannot reach Keystone:** VPN not connected or wrong `auth_url`.
+* **TLS/CA errors:** Add `cacert:` and `verify:` fields in `clouds.yaml` if your org uses a custom CA.
+* **Interface mismatch:** Use `interface: internal` if your org blocks public endpoints on VPN.
+* **403 Forbidden on resource create:** Role is too limited → recreate with correct roles.
 
 ---
 
 ## Cleanup
 
-When finished, destroy the bastion:
+To remove the bastion:
 
 ```bash
 terraform destroy
@@ -104,9 +189,11 @@ terraform destroy
 
 ---
 
-⚠️ **Security Note:**
-Restrict `ssh_ingress_cidr` to your trusted IP ranges, not `0.0.0.0/0`. Also, rotate keys regularly and disable password authentication (already enforced in cloud-init).
+## Security Notes
 
----
+* Restrict `ssh_ingress_cidr` in `main.tf` to your trusted IP(s), not `0.0.0.0/0`.
+* Rotate your Application Credentials regularly.
+* Never commit `clouds.yaml` or secrets to Git.
 
-Would you like me to also include the **`cloud-init` YAML** snippet in this README (so you can see exactly what tools get installed), or just keep it hidden in `main.tf`?
+```
+
