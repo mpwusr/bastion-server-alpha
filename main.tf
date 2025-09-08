@@ -9,35 +9,26 @@ terraform {
 }
 
 provider "openstack" {
-  cloud  = "mycloud"
-  # region = "AUE1"  # uncomment to force region if needed
+  cloud = "mycloud"
+  # region = "AUE1"
 }
 
 # -------------------- Variables --------------------
-variable "server_name"  { type = string, default = "bastion-almalinux9" }
-variable "image_name"   { type = string, default = "AlmaLinux-9" }
-variable "flavor_name"  { type = string, default = "gp1.micro" }
-variable "keypair_name" { type = string }
+variable "server_name"        { type = string, default = "bastion-almalinux9" }
+variable "image_name"         { type = string, default = "AlmaLinux-9" }
+variable "flavor_name"        { type = string, default = "gp1.micro" }
+variable "keypair_name"       { type = string }
 
-# If you already have a tenant/internal network, set one of these:
-variable "network_id"   { type = string, default = "" }   # internal net UUID
-variable "network_name" { type = string, default = "" }   # internal net NAME
-
-# External/public network **NAME** (where External=True) for FIPs + router gw
+# Existing external/public network NAME (for floating IP pool)
 variable "external_network_name" { type = string }
 
-# Create a tenant network/router automatically (useful when you have none)
-variable "create_tenant_network" {
-  type    = bool
-  default = true
-}
+# We are NOT creating a tenant network
+variable "create_tenant_network" { type = bool, default = false }
 
-# Tenant network settings (used when create_tenant_network=true)
-variable "tenant_net_name"        { type = string, default = "bastion-net" }
-variable "tenant_subnet_name"     { type = string, default = "bastion-subnet" }
-variable "tenant_subnet_cidr"     { type = string, default = "10.42.0.0/24" }
-variable "tenant_subnet_gateway"  { type = string, default = null }
-variable "dns_nameservers"        { type = list(string), default = ["1.1.1.1","8.8.8.8"] }
+# >>> Existing subnet we want to attach to (your values) <<<
+# GP-net1 10.40.144.0/20
+variable "subnet_id"   { type = string, default = "db95ad6f-b129-41e7-857a-77fdfe95216c" }
+variable "subnet_name" { type = string, default = "GP-net1" } # informational only
 
 # Security / boot
 variable "ssh_ingress_cidr"   { type = string, default = "0.0.0.0/0" }
@@ -48,7 +39,7 @@ variable "attach_volume_boot" { type = bool,   default = true }
 variable "admin_pubkey"      { type = string, default = "" }
 variable "admin_pubkey_path" { type = string, default = "~/.ssh/id_rsa.pub" }
 
-# Allocate Floating IP? (set false if pool is exhausted)
+# Allocate Floating IP?
 variable "allocate_fip" { type = bool, default = true }
 
 variable "tags" { type = map(string), default = {} }
@@ -63,54 +54,19 @@ data "openstack_images_image_v2" "image" {
   most_recent = true
 }
 
-# Resolve external network by NAME (used for FIP and router gw)
+# Resolve external network by NAME (for FIP pool)
 data "openstack_networking_network_v2" "external" {
   name = var.external_network_name
 }
 
-# Create tenant net/subnet/router if requested
-resource "openstack_networking_network_v2" "tenant" {
-  count          = var.create_tenant_network ? 1 : 0
-  name           = var.tenant_net_name
-  admin_state_up = true
+# Resolve target SUBNET (we'll derive network_id from it)
+data "openstack_networking_subnet_v2" "target" {
+  id = var.subnet_id
 }
 
-resource "openstack_networking_subnet_v2" "tenant" {
-  count           = var.create_tenant_network ? 1 : 0
-  name            = var.tenant_subnet_name
-  network_id      = openstack_networking_network_v2.tenant[0].id
-  cidr            = var.tenant_subnet_cidr
-  ip_version      = 4
-  gateway_ip      = var.tenant_subnet_gateway
-  enable_dhcp     = true
-  dns_nameservers = var.dns_nameservers
-}
-
-resource "openstack_networking_router_v2" "tenant" {
-  count               = var.create_tenant_network ? 1 : 0
-  name                = "${var.tenant_net_name}-router"
-  admin_state_up      = true
-  external_network_id = data.openstack_networking_network_v2.external.id
-}
-
-resource "openstack_networking_router_interface_v2" "tenant" {
-  count     = var.create_tenant_network ? 1 : 0
-  router_id = openstack_networking_router_v2.tenant[0].id
-  subnet_id = openstack_networking_subnet_v2.tenant[0].id
-}
-
-# If not creating, resolve an existing internal network by name/id
-data "openstack_networking_network_v2" "internal_existing" {
-  count = var.create_tenant_network ? 0 : 1
-  name  = (var.network_name != "" ? var.network_name : null)
-  id    = (var.network_name == "" && var.network_id != "" ? var.network_id : null)
-}
-
-# Effective internal network id we’ll attach to
+# The Neutron network that contains the target subnet
 locals {
-  internal_network_id = var.create_tenant_network
-    ? openstack_networking_network_v2.tenant[0].id
-    : data.openstack_networking_network_v2.internal_existing[0].id
+  internal_network_id = data.openstack_networking_subnet_v2.target.network_id
 }
 
 # -------------------- Security group --------------------
@@ -160,17 +116,31 @@ locals {
   CLOUD
 }
 
+# -------------------- Port pinned to your subnet --------------------
+resource "openstack_networking_port_v2" "bastion" {
+  name               = "${var.server_name}-port"
+  network_id         = local.internal_network_id
+  admin_state_up     = true
+  security_group_ids = [openstack_networking_secgroup_v2.bastion_sg.id]
+
+  fixed_ip {
+    subnet_id = data.openstack_networking_subnet_v2.target.id
+    # ip_address = "10.40.144.X" # <-- (optional) set a static IP inside the /20 if you need one
+  }
+
+  tags = [for k, v in var.tags : "${k}:${v}"]
+}
+
 # -------------------- Instance --------------------
 resource "openstack_compute_instance_v2" "bastion" {
-  name            = var.server_name
-  flavor_name     = var.flavor_name
-  key_pair        = var.keypair_name
-  security_groups = [openstack_networking_secgroup_v2.bastion_sg.name]
-  user_data       = local.user_data
-  metadata        = var.tags
+  name      = var.server_name
+  flavor_name = var.flavor_name
+  key_pair    = var.keypair_name
+  user_data   = local.user_data
+  metadata    = var.tags
 
-  # Attach to the tenant/internal network
-  network { uuid = local.internal_network_id }
+  # Attach the pre-created port (ensures we land on the exact subnet)
+  network { port = openstack_networking_port_v2.bastion.id }
 
   # Boot from volume (optional)
   dynamic "block_device" {
@@ -186,9 +156,6 @@ resource "openstack_compute_instance_v2" "bastion" {
   }
 
   image_id = var.attach_volume_boot ? null : data.openstack_images_image_v2.image.id
-
-  # Ensure router interface exists before boot when creating tenant net
-  depends_on = [openstack_networking_router_interface_v2.tenant]
 }
 
 # -------------------- Floating IP (optional) --------------------
@@ -200,5 +167,6 @@ resource "openstack_networking_floatingip_v2" "fip" {
 resource "openstack_networking_floatingip_associate_v2" "fip_assoc" {
   count       = var.allocate_fip ? 1 : 0
   floating_ip = openstack_networking_floatingip_v2.fip[0].address
-  port_id     = openstack_compute_instance_v2.bastion.network[0].port
+  port_id     = openstack_networking_port_v2.bastion.id
 }
+
