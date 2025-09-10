@@ -8,65 +8,49 @@ terraform {
   }
 }
 
+# -------------------- Provider --------------------
+variable "cloud"  { type = string, default = "mycloud" }
+variable "region" { type = string, default = "AUE1" }
+
 provider "openstack" {
-  cloud = "mycloud"
-  # region = "AUE1"
+  cloud  = var.cloud
+  region = var.region
 }
 
 # -------------------- Variables --------------------
-variable "server_name"        { type = string, default = "bastion-almalinux9" }
-variable "image_name"         { type = string, default = "AlmaLinux-9" }
-variable "flavor_name"        { type = string, default = "gp1.micro" }
-variable "keypair_name"       { type = string }
+variable "server_name"   { type = string, default = "bastion-ubuntu" }
+variable "image_name"    { type = string, default = "noble-server-20241105" } # Ubuntu 24.04
+variable "flavor_name"   { type = string, default = "gp1.micro" }
 
-# Existing external/public network NAME (for floating IP pool)
-variable "external_network_name" { type = string }
-
-# We are NOT creating a tenant network
-variable "create_tenant_network" { type = bool, default = false }
-
-# >>> Existing subnet we want to attach to (your values) <<<
-# GP-net1 10.40.144.0/20
-variable "subnet_id"   { type = string, default = "db95ad6f-b129-41e7-857a-77fdfe95216c" }
-variable "subnet_name" { type = string, default = "GP-net1" } # informational only
-
-# Security / boot
-variable "ssh_ingress_cidr"   { type = string, default = "0.0.0.0/0" }
-variable "volume_size_gb"     { type = number, default = 20 }
-variable "attach_volume_boot" { type = bool,   default = true }
-
-# SSH key: paste text or read from file
-variable "admin_pubkey"      { type = string, default = "" }
+# Keypair management (created per-region)
+variable "keypair_name"  { type = string }                     # e.g. "bastion-key"
+variable "admin_pubkey"  { type = string, default = "" }       # paste pubkey OR leave blank to read from path
 variable "admin_pubkey_path" { type = string, default = "~/.ssh/id_rsa.pub" }
 
-# Allocate Floating IP?
-variable "allocate_fip" { type = bool, default = true }
+# Existing network/subnet (must be from the same region)
+variable "network_id"    { type = string }                     # Neutron network UUID
+variable "subnet_id"     { type = string }                     # Subnet UUID within network
 
+# Security group
+variable "ssh_ingress_cidr" { type = string, default = "10.0.0.0/8" }  # set to your VPN/internal CIDR
+
+# Root disk strategy
+variable "attach_volume_boot" { type = bool,   default = false }  # false = ephemeral boot
+variable "volume_size_gb"     { type = number, default = 20 }
+variable "volume_type"        { type = string, default = "" }     # e.g. "ceph", "__DEFAULT__" (optional)
+
+# Tags
 variable "tags" { type = map(string), default = {} }
 
-# -------------------- Locals & Data --------------------
+# -------------------- Locals --------------------
 locals {
   admin_pubkey_effective = var.admin_pubkey != "" ? var.admin_pubkey : trimspace(file(pathexpand(var.admin_pubkey_path)))
 }
 
+# -------------------- Image --------------------
 data "openstack_images_image_v2" "image" {
   name        = var.image_name
   most_recent = true
-}
-
-# Resolve external network by NAME (for FIP pool)
-data "openstack_networking_network_v2" "external" {
-  name = var.external_network_name
-}
-
-# Resolve target SUBNET (we'll derive network_id from it)
-data "openstack_networking_subnet_v2" "target" {
-  id = var.subnet_id
-}
-
-# The Neutron network that contains the target subnet
-locals {
-  internal_network_id = data.openstack_networking_subnet_v2.target.network_id
 }
 
 # -------------------- Security group --------------------
@@ -86,63 +70,91 @@ resource "openstack_networking_secgroup_rule_v2" "ssh_in" {
   security_group_id = openstack_networking_secgroup_v2.bastion_sg.id
 }
 
-# -------------------- Cloud-init --------------------
-locals {
-  user_data = <<-CLOUD
-    #cloud-config
-    users:
-      - name: admin
-        sudo: ALL=(ALL) NOPASSWD:ALL
-        groups: wheel
-        shell: /bin/bash
-        ssh-authorized-keys:
-          - ${local.admin_pubkey_effective}
-    ssh_pwauth: false
-    package_update: true
-    packages:
-      - git
-      - jq
-      - tmux
-      - curl
-      - unzip
-      - python3
-      - python3-pip
-    runcmd:
-      - curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-      - curl -LO "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-      - install -m 0755 kubectl /usr/local/bin/kubectl
-      - rm -f kubectl
-      - curl -L https://github.com/derailed/k9s/releases/latest/download/k9s_Linux_amd64.tar.gz | tar xz -C /usr/local/bin k9s
-  CLOUD
+# -------------------- Keypair (per region) --------------------
+resource "openstack_compute_keypair_v2" "bastion_key" {
+  name       = var.keypair_name
+  public_key = local.admin_pubkey_effective
 }
 
-# -------------------- Port pinned to your subnet --------------------
+# -------------------- Port pinned to your existing subnet --------------------
 resource "openstack_networking_port_v2" "bastion" {
   name               = "${var.server_name}-port"
-  network_id         = local.internal_network_id
+  network_id         = var.network_id
   admin_state_up     = true
   security_group_ids = [openstack_networking_secgroup_v2.bastion_sg.id]
 
   fixed_ip {
-    subnet_id = data.openstack_networking_subnet_v2.target.id
-    # ip_address = "10.40.144.X" # <-- (optional) set a static IP inside the /20 if you need one
+    subnet_id = var.subnet_id
+    # ip_address = "10.x.x.x" # (optional) pin a static IP within the subnet
   }
 
   tags = [for k, v in var.tags : "${k}:${v}"]
 }
 
+# -------------------- Cloud-init --------------------
+# Ubuntu user + TEMP password login for console (set ssh_pwauth=false later for security)
+locals {
+  user_data = <<-CLOUD
+    #cloud-config
+    users:
+      - name: ubuntu
+        sudo: ALL=(ALL) NOPASSWD:ALL
+        groups: sudo
+        shell: /bin/bash
+        lock_passwd: false
+
+    ssh_pwauth: true
+    chpasswd:
+      list: |
+        ubuntu:MyNewPass123!
+      expire: False
+
+    package_update: true
+    packages:
+      - ca-certificates
+      - curl
+      - git
+      - jq
+      - tmux
+      - unzip
+      - gnupg
+      - lsb-release
+      - python3
+      - python3-pip
+      - python3-openstackclient
+
+    runcmd:
+      # --- HashiCorp repo + Terraform ---
+      - bash -lc 'set -euo pipefail; curl -fsSL https://apt.releases.hashicorp.com/gpg | gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg'
+      - bash -lc 'echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $$(lsb_release -cs) main" > /etc/apt/sources.list.d/hashicorp.list'
+      - bash -lc 'apt-get update && apt-get install -y terraform && terraform -version'
+
+      # --- kubectl (latest stable) ---
+      - bash -lc 'set -euo pipefail; KVER=$(curl -Ls https://dl.k8s.io/release/stable.txt); curl -LO https://dl.k8s.io/release/$${KVER}/bin/linux/amd64/kubectl && install -m 0755 kubectl /usr/local/bin/kubectl && rm -f kubectl'
+
+      # --- helm ---
+      - bash -lc 'curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash'
+
+      # --- k9s ---
+      - bash -lc 'TMP=$(mktemp -d) && cd "$TMP" && curl -L https://github.com/derailed/k9s/releases/latest/download/k9s_Linux_amd64.tar.gz -o k9s.tgz && tar xzf k9s.tgz && install -m 0755 k9s /usr/local/bin/k9s && cd / && rm -rf "$TMP"'
+
+      # Sanity
+      - bash -lc 'kubectl version --client || true; helm version || true; k9s version || true; openstack --version || true; terraform -version || true'
+  CLOUD
+}
+
 # -------------------- Instance --------------------
 resource "openstack_compute_instance_v2" "bastion" {
-  name      = var.server_name
+  name        = var.server_name
   flavor_name = var.flavor_name
-  key_pair    = var.keypair_name
+  key_pair    = openstack_compute_keypair_v2.bastion_key.name
   user_data   = local.user_data
   metadata    = var.tags
 
-  # Attach the pre-created port (ensures we land on the exact subnet)
+  # Attach the pre-created port (ensures exact subnet)
   network { port = openstack_networking_port_v2.bastion.id }
 
-  # Boot from volume (optional)
+  # Boot strategy (toggle with var.attach_volume_boot)
   dynamic "block_device" {
     for_each = var.attach_volume_boot ? [1] : []
     content {
@@ -152,21 +164,17 @@ resource "openstack_compute_instance_v2" "bastion" {
       volume_size           = var.volume_size_gb
       boot_index            = 0
       delete_on_termination = true
+      volume_type           = var.volume_type != "" ? var.volume_type : null
     }
   }
 
+  # If not boot-from-volume, use the image directly (ephemeral root disk)
   image_id = var.attach_volume_boot ? null : data.openstack_images_image_v2.image.id
 }
 
-# -------------------- Floating IP (optional) --------------------
-resource "openstack_networking_floatingip_v2" "fip" {
-  count = var.allocate_fip ? 1 : 0
-  pool  = var.external_network_name   # NAME where External=True (e.g., "Vlan127")
+# -------------------- Outputs --------------------
+output "bastion_instance_id" { value = openstack_compute_instance_v2.bastion.id }
+output "bastion_port_id"     { value = openstack_networking_port_v2.bastion.id }
+output "bastion_fixed_ip" {
+  value = one([for ip in openstack_networking_port_v2.bastion.fixed_ip : ip.ip_address])
 }
-
-resource "openstack_networking_floatingip_associate_v2" "fip_assoc" {
-  count       = var.allocate_fip ? 1 : 0
-  floating_ip = openstack_networking_floatingip_v2.fip[0].address
-  port_id     = openstack_networking_port_v2.bastion.id
-}
-
