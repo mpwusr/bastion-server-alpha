@@ -124,22 +124,22 @@ locals {
       - python3-openstackclient
 
     runcmd:
-      # --- HashiCorp repo + Terraform ---
-      - bash -lc 'set -euo pipefail; curl -fsSL https://apt.releases.hashicorp.com/gpg | gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg'
-      - bash -lc 'echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $$(lsb_release -cs) main" > /etc/apt/sources.list.d/hashicorp.list'
+      # --- HashiCorp APT repo + Terraform (fixes NO_PUBKEY) ---
+      - bash -lc 'set -euo pipefail'
+      - bash -lc 'install -d -m 0755 /usr/share/keyrings'
+      - bash -lc 'curl -fsSL https://apt.releases.hashicorp.com/gpg | gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg'
+      - bash -lc 'chmod 644 /usr/share/keyrings/hashicorp-archive-keyring.gpg'
+      - bash -lc 'echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com noble main" > /etc/apt/sources.list.d/hashicorp.list'
       - bash -lc 'apt-get update && apt-get install -y terraform && terraform -version'
-
-      # --- kubectl (latest stable) ---
-      - bash -lc 'set -euo pipefail; KVER=$(curl -Ls https://dl.k8s.io/release/stable.txt); curl -LO https://dl.k8s.io/release/$${KVER}/bin/linux/amd64/kubectl && install -m 0755 kubectl /usr/local/bin/kubectl && rm -f kubectl'
-
-      # --- helm ---
+    
+      # --- (optional) kubectl / helm / k9s; keep if you want these on the bastion ---
+      - bash -lc 'KVER=$(curl -Ls https://dl.k8s.io/release/stable.txt); curl -LO https://dl.k8s.io/release/$${KVER}/bin/linux/amd64/kubectl && install -m 0755 kubectl /usr/local/bin/kubectl && rm -f kubectl'
       - bash -lc 'curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash'
-
-      # --- k9s ---
       - bash -lc 'TMP=$(mktemp -d) && cd "$TMP" && curl -L https://github.com/derailed/k9s/releases/latest/download/k9s_Linux_amd64.tar.gz -o k9s.tgz && tar xzf k9s.tgz && install -m 0755 k9s /usr/local/bin/k9s && cd / && rm -rf "$TMP"'
+    
+      # --- sanity ---
+      - bash -lc 'terraform -version; kubectl version --client || true; helm version || true; k9s version || true'
 
-      # Sanity
-      - bash -lc 'kubectl version --client || true; helm version || true; k9s version || true; openstack --version || true; terraform -version || true'
   CLOUD
 }
 
