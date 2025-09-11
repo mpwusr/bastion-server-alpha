@@ -10,12 +10,12 @@ terraform {
 
 # -------------------- Provider --------------------
 variable "cloud"  {
-  type = string
+  type    = string
   default = "mycloud"
 }
 
 variable "region" {
-  type = string
+  type    = string
   default = "USE1"
 }
 
@@ -25,69 +25,81 @@ provider "openstack" {
 }
 
 # -------------------- Variables --------------------
-variable "server_name"   {
-  type = string
+variable "server_name" {
+  type    = string
   default = "bastion-ubuntu"
 }
 
-variable "image_name"    {
-  type = string
-  default = "noble-server-20241105" } # Ubuntu 24.04
+variable "image_name" {
+  type    = string
+  default = "noble-server-20241105" # Ubuntu 24.04
+}
 
-variable "flavor_name"   {
-  type = string
+variable "flavor_name" {
+  type    = string
   default = "gp1.micro"
 }
 
 # Keypair management (created per-region)
-
-variable "keypair_name"  {
+variable "keypair_name" {
   type = string
-}                     # e.g. "bastion-key"
+} # e.g. "bastion-key"
 
-variable "admin_pubkey"  {
-  type = string
+variable "admin_pubkey" {
+  type    = string
   default = ""
-}       # paste pubkey OR leave blank to read from path
+} # paste pubkey OR leave blank to read from path
 
 variable "admin_pubkey_path" {
-  type = string,
+  type    = string
   default = "~/.ssh/id_rsa.pub"
 }
 
 # Existing network/subnet (must be from the same region)
-variable "network_id"    {
+variable "network_id" {
   type = string
-}                     # Neutron network UUID
-variable "subnet_id"     {
-  type = string
-}                     # Subnet UUID within network
+} # Neutron network UUID
 
-# Security group
-variable "ssh_ingress_cidr" {
+variable "subnet_id" {
   type = string
-  default = "10.0.0.0/8"
-}  # set to your VPN/internal CIDR
+} # Subnet UUID within network
+
+# Reuse an existing security group (avoid quota)
+variable "existing_sg_name" {
+  type    = string
+  default = "default"         # change to your SG name
+}
+
+# Optional: allow Terraform to add SSH rule to that SG
+variable "manage_sg_rules" {
+  type    = bool
+  default = false             # set true if you want TF to add the SSH rule below
+}
+
+variable "ssh_ingress_cidr" {
+  type    = string
+  default = "10.0.0.0/8"      # set to your VPN/internal CIDR
+}
 
 # Root disk strategy
 variable "attach_volume_boot" {
-  type = bool
-  default = false
-}  # false = ephemeral boot
+  type    = bool
+  default = false             # false = ephemeral boot
+}
 
-variable "volume_size_gb"     {
-  type = number
+variable "volume_size_gb" {
+  type    = number
   default = 20
 }
 
-variable "volume_type"        {
-  type = string
-  default = ""
-}     # e.g. "ceph", "__DEFAULT__" (optional)
+variable "volume_type" {
+  type    = string
+  default = ""                # e.g. "ceph", "__DEFAULT__" (optional)
+}
 
 # Tags
 variable "tags" {
-  type = map(string)
+  type    = map(string)
   default = {}
 }
 
@@ -102,21 +114,23 @@ data "openstack_images_image_v2" "image" {
   most_recent = true
 }
 
-# -------------------- Security group --------------------
-resource "openstack_networking_secgroup_v2" "bastion_sg" {
-  name        = "${var.server_name}-sg"
-  description = "SSH from allowed CIDR; all egress"
-  tags        = [for k, v in var.tags : "${k}:${v}"]
+# -------------------- Security group (reused) --------------------
+# Lookup, do not create
+data "openstack_networking_secgroup_v2" "bastion_sg" {
+  name = var.existing_sg_name
+  # tenant_id = var.tenant_id  # uncomment if needed to disambiguate tenants/projects
 }
 
+# Optionally add SSH ingress to the existing SG
 resource "openstack_networking_secgroup_rule_v2" "ssh_in" {
+  count             = var.manage_sg_rules ? 1 : 0
   direction         = "ingress"
   ethertype         = "IPv4"
   protocol          = "tcp"
   port_range_min    = 22
   port_range_max    = 22
   remote_ip_prefix  = var.ssh_ingress_cidr
-  security_group_id = openstack_networking_secgroup_v2.bastion_sg.id
+  security_group_id = data.openstack_networking_secgroup_v2.bastion_sg.id
 }
 
 # -------------------- Keypair (per region) --------------------
@@ -127,10 +141,12 @@ resource "openstack_compute_keypair_v2" "bastion_key" {
 
 # -------------------- Port pinned to your existing subnet --------------------
 resource "openstack_networking_port_v2" "bastion" {
-  name               = "${var.server_name}-port"
-  network_id         = var.network_id
-  admin_state_up     = true
-  security_group_ids = [openstack_networking_secgroup_v2.bastion_sg.id]
+  name           = "${var.server_name}-port"
+  network_id     = var.network_id
+  admin_state_up = true
+
+  # Ports use SG **IDs**
+  security_group_ids = [data.openstack_networking_secgroup_v2.bastion_sg.id]
 
   fixed_ip {
     subnet_id = var.subnet_id
@@ -181,14 +197,13 @@ locals {
       - bash -lc 'echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com noble main" > /etc/apt/sources.list.d/hashicorp.list'
       - bash -lc 'apt-get update && apt-get install -y terraform && terraform -version'
     
-      # --- (optional) kubectl / helm / k9s; keep if you want these on the bastion ---
+      # --- (optional) kubectl / helm / k9s ---
       - bash -lc 'KVER=$(curl -Ls https://dl.k8s.io/release/stable.txt); curl -LO https://dl.k8s.io/release/$${KVER}/bin/linux/amd64/kubectl && install -m 0755 kubectl /usr/local/bin/kubectl && rm -f kubectl'
       - bash -lc 'curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash'
       - bash -lc 'TMP=$(mktemp -d) && cd "$TMP" && curl -L https://github.com/derailed/k9s/releases/latest/download/k9s_Linux_amd64.tar.gz -o k9s.tgz && tar xzf k9s.tgz && install -m 0755 k9s /usr/local/bin/k9s && cd / && rm -rf "$TMP"'
     
       # --- sanity ---
       - bash -lc 'terraform -version; kubectl version --client || true; helm version || true; k9s version || true'
-
   CLOUD
 }
 
@@ -199,6 +214,9 @@ resource "openstack_compute_instance_v2" "bastion" {
   key_pair    = openstack_compute_keypair_v2.bastion_key.name
   user_data   = local.user_data
   metadata    = var.tags
+
+  # Nova uses SG **names**
+  security_groups = [data.openstack_networking_secgroup_v2.bastion_sg.name]
 
   # Attach the pre-created port (ensures exact subnet)
   network { port = openstack_networking_port_v2.bastion.id }
