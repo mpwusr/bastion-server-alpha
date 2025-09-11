@@ -9,8 +9,15 @@ terraform {
 }
 
 # -------------------- Provider --------------------
-variable "cloud"  { type = string, default = "mycloud" }
-variable "region" { type = string, default = "AUE1" }
+variable "cloud"  {
+  type = string
+  default = "mycloud" 
+}
+
+variable "region" {
+  type = string
+  default = "AUE1" 
+}
 
 provider "openstack" {
   cloud  = var.cloud
@@ -18,29 +25,71 @@ provider "openstack" {
 }
 
 # -------------------- Variables --------------------
-variable "server_name"   { type = string, default = "bastion-ubuntu" }
-variable "image_name"    { type = string, default = "noble-server-20241105" } # Ubuntu 24.04
-variable "flavor_name"   { type = string, default = "gp1.micro" }
+variable "server_name"   { 
+  type = string
+  default = "bastion-ubuntu" 
+}
+
+variable "image_name"    {
+  type = string
+  default = "noble-server-20241105" 
+}
+
+variable "flavor_name"   {
+  type = string
+  default = "gp1.micro" 
+}
 
 # Keypair management (created per-region)
-variable "keypair_name"  { type = string }                     # e.g. "bastion-key"
-variable "admin_pubkey"  { type = string, default = "" }       # paste pubkey OR leave blank to read from path
-variable "admin_pubkey_path" { type = string, default = "~/.ssh/id_rsa.pub" }
+variable "keypair_name"  {
+  type = string 
+}
+
+variable "admin_pubkey"  {
+  type = string, default = "" 
+}
+
+variable "admin_pubkey_path" {
+  type = string
+  default = "~/.ssh/id_rsa.pub" 
+}
 
 # Existing network/subnet (must be from the same region)
-variable "network_id"    { type = string }                     # Neutron network UUID
-variable "subnet_id"     { type = string }                     # Subnet UUID within network
+variable "network_id"    {
+  type = string 
+}
+
+variable "subnet_id"     {
+  type = string 
+}
 
 # Security group
-variable "ssh_ingress_cidr" { type = string, default = "10.0.0.0/8" }  # set to your VPN/internal CIDR
+variable "ssh_ingress_cidr" {
+  type = string
+  default = "10.0.0.0/8" 
+}
 
 # Root disk strategy
-variable "attach_volume_boot" { type = bool,   default = false }  # false = ephemeral boot
-variable "volume_size_gb"     { type = number, default = 20 }
-variable "volume_type"        { type = string, default = "" }     # e.g. "ceph", "__DEFAULT__" (optional)
+variable "attach_volume_boot" {
+  type = bool
+  default = false 
+}
+
+variable "volume_size_gb"     {
+  type = number, 
+  default = 20 
+}
+
+variable "volume_type"        { 
+  type = string
+  default = "" 
+}
 
 # Tags
-variable "tags" { type = map(string), default = {} }
+variable "tags" { 
+  type = map(string)
+  default = {} 
+}
 
 # -------------------- Locals --------------------
 locals {
