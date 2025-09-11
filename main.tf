@@ -14,17 +14,40 @@ provider "openstack" {
 }
 
 # -------------------- Variables --------------------
-variable "server_name"  { type = string, default = "bastion-almalinux9" }
-variable "image_name"   { type = string, default = "AlmaLinux-9" }
-variable "flavor_name"  { type = string, default = "gp1.micro" }
-variable "keypair_name" { type = string }
+variable "server_name"  {
+  type = string
+  default = "bastion-almalinux9" 
+}
+
+variable "image_name"   {
+  type = string
+  default = "AlmaLinux-9" 
+}
+
+variable "flavor_name"  {
+  type = string
+  default = "gp1.micro" 
+}
+
+variable "keypair_name" {
+  type = string
+}
 
 # If you already have a tenant/internal network, set one of these:
-variable "network_id"   { type = string, default = "" }   # internal net UUID
-variable "network_name" { type = string, default = "" }   # internal net NAME
+variable "network_id"   {
+  type = string
+  default = "" 
+}   # internal net UUID
+
+variable "network_name" {
+  type = string
+  default = "" 
+}   # internal net NAME
 
 # External/public network **NAME** (where External=True) for FIPs + router gw
-variable "external_network_name" { type = string }
+variable "external_network_name" {
+  type = string 
+}
 
 # Create a tenant network/router automatically (useful when you have none)
 variable "create_tenant_network" {
@@ -33,25 +56,68 @@ variable "create_tenant_network" {
 }
 
 # Tenant network settings (used when create_tenant_network=true)
-variable "tenant_net_name"        { type = string, default = "bastion-net" }
-variable "tenant_subnet_name"     { type = string, default = "bastion-subnet" }
-variable "tenant_subnet_cidr"     { type = string, default = "10.42.0.0/24" }
-variable "tenant_subnet_gateway"  { type = string, default = null }
-variable "dns_nameservers"        { type = list(string), default = ["1.1.1.1","8.8.8.8"] }
+variable "tenant_net_name"        {
+  type = string
+  default = "bastion-net" 
+}
+
+variable "tenant_subnet_name"     {
+  type = string
+  default = "bastion-subnet" 
+}
+
+variable "tenant_subnet_cidr"     {
+  type = string
+  default = "10.42.0.0/24" 
+}
+
+variable "tenant_subnet_gateway"  {
+  type = string
+  default = null 
+}
+
+variable "dns_nameservers"        {
+  type = list(string),
+  default = ["1.1.1.1","8.8.8.8"] 
+}
 
 # Security / boot
-variable "ssh_ingress_cidr"   { type = string, default = "0.0.0.0/0" }
-variable "volume_size_gb"     { type = number, default = 20 }
-variable "attach_volume_boot" { type = bool,   default = true }
+variable "ssh_ingress_cidr"   {
+  type = string
+  default = "0.0.0.0/0" 
+}
+
+variable "volume_size_gb"     {
+  type = number
+  default = 20 
+}
+
+variable "attach_volume_boot" { 
+  type = bool
+  default = true 
+}
 
 # SSH key: paste text or read from file
-variable "admin_pubkey"      { type = string, default = "" }
-variable "admin_pubkey_path" { type = string, default = "~/.ssh/id_rsa.pub" }
+variable "admin_pubkey"      {
+  type = string
+  default = "" 
+}
+
+variable "admin_pubkey_path" {
+  type = string
+  default = "~/.ssh/id_rsa.pub" 
+}
 
 # Allocate Floating IP? (set false if pool is exhausted)
-variable "allocate_fip" { type = bool, default = true }
+variable "allocate_fip" {
+  type = bool
+  default = true 
+}
 
-variable "tags" { type = map(string), default = {} }
+variable "tags" {
+  type = map(string)
+  default = {} 
+}
 
 # -------------------- Locals & Data --------------------
 locals {
